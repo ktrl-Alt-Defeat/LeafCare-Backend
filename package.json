@@ -1,0 +1,65 @@
+{
+  "name": "leafcare-backend",
+  "version": "1.0.0",
+  "description": "LeafCare Multilingual Agricultural Advisory & AI Platform Backend API",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "clean": "rimraf dist",
+    "build": "npm run clean && tsc",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "db:pull": "prisma db pull",
+    "db:generate": "prisma generate",
+    "postinstall": "prisma generate",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:migrate": "prisma migrate deploy",
+    "db:status": "prisma migrate status"
+  },
+  "keywords": [
+    "leafcare",
+    "agronomy",
+    "express",
+    "typescript",
+    "postgresql",
+    "prisma"
+  ],
+  "author": "LeafCare Engineering Team",
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/client": "6.3.1",
+    "compression": "^1.7.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1",
+    "winston": "^3.17.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/compression": "^1.7.5",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.25",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^22.13.4",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.5.1",
+    "prisma": "6.3.1",
+    "rimraf": "^6.0.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
+}
