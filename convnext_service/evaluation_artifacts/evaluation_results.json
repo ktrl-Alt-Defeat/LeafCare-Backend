@@ -1,0 +1,158 @@
+{
+  "model_architecture": "convnext_tiny",
+  "checkpoint": "torchvision_pretrained_weights",
+  "total_test_images": 1037,
+  "active_evaluated_classes": 15,
+  "total_model_classes": 38,
+  "overall_metrics": {
+    "top1_accuracy": 0.1514,
+    "macro_precision": 0.1245,
+    "macro_recall": 0.1856,
+    "macro_f1": 0.1188,
+    "weighted_precision": 0.1218,
+    "weighted_recall": 0.1514,
+    "weighted_f1": 0.1053,
+    "avg_inference_duration_ms": 107.99
+  },
+  "confidence_stats": {
+    "avg_confidence_correct": 0.0462,
+    "avg_confidence_incorrect": 0.0594
+  },
+  "per_crop_summary": [
+    {
+      "crop": "TOMATO",
+      "disease_classes_count": 10,
+      "test_images_count": 805,
+      "correct_predictions": 65,
+      "accuracy": 0.0807
+    },
+    {
+      "crop": "SOYBEAN",
+      "disease_classes_count": 1,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "ORANGE",
+      "disease_classes_count": 1,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "PEACH",
+      "disease_classes_count": 2,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "SQUASH",
+      "disease_classes_count": 1,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "APPLE",
+      "disease_classes_count": 4,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "BLUEBERRY",
+      "disease_classes_count": 1,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "BELL_PEPPER",
+      "disease_classes_count": 2,
+      "test_images_count": 124,
+      "correct_predictions": 44,
+      "accuracy": 0.3548
+    },
+    {
+      "crop": "GRAPE",
+      "disease_classes_count": 4,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "CORN",
+      "disease_classes_count": 4,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "STRAWBERRY",
+      "disease_classes_count": 2,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "POTATO",
+      "disease_classes_count": 3,
+      "test_images_count": 108,
+      "correct_predictions": 48,
+      "accuracy": 0.4444
+    },
+    {
+      "crop": "CHERRY",
+      "disease_classes_count": 2,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    },
+    {
+      "crop": "RASPBERRY",
+      "disease_classes_count": 1,
+      "test_images_count": 0,
+      "correct_predictions": 0,
+      "accuracy": 0.0
+    }
+  ],
+  "threshold_analysis": [
+    {
+      "threshold": 0.5,
+      "coverage": 0.0,
+      "accuracy": 0.0,
+      "accepted_count": 0,
+      "rejected_count": 1037
+    },
+    {
+      "threshold": 0.6,
+      "coverage": 0.0,
+      "accuracy": 0.0,
+      "accepted_count": 0,
+      "rejected_count": 1037
+    },
+    {
+      "threshold": 0.7,
+      "coverage": 0.0,
+      "accuracy": 0.0,
+      "accepted_count": 0,
+      "rejected_count": 1037
+    },
+    {
+      "threshold": 0.8,
+      "coverage": 0.0,
+      "accuracy": 0.0,
+      "accepted_count": 0,
+      "rejected_count": 1037
+    },
+    {
+      "threshold": 0.9,
+      "coverage": 0.0,
+      "accuracy": 0.0,
+      "accepted_count": 0,
+      "rejected_count": 1037
+    }
+  ]
+}

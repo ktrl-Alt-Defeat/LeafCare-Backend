@@ -97,7 +97,24 @@ const envSchema = z.object({
   AI_SERVICE_URL: z.string().url().optional(),
   AI_SERVICE_TIMEOUT_MS: z
     .string()
-    .default('3000')
+    .default('30000')
+    .transform((val) => parseInt(val, 10)),
+
+  // --- Pl@ntNet API Configuration -----------------------------------------
+  PLANTNET_API_KEY: z
+    .string({ required_error: 'PLANTNET_API_KEY is required' })
+    .min(1, 'PLANTNET_API_KEY cannot be empty'),
+  PLANTNET_API_URL: z
+    .string()
+    .url()
+    .default('https://my-api.plantnet.org/v2/identify/all'),
+  PLANTNET_MIN_CONFIDENCE: z
+    .string()
+    .default('0.50')
+    .transform((val) => parseFloat(val)),
+  PLANTNET_TIMEOUT_MS: z
+    .string()
+    .default('20000')
     .transform((val) => parseInt(val, 10)),
 });
 

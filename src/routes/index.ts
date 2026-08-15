@@ -6,6 +6,7 @@ import { diseaseRoutes } from '../modules/disease/index.js';
 import { knowledgeRoutes } from '../modules/knowledge/index.js';
 import { communityRoutes } from '../modules/community/index.js';
 import { marketplaceRoutes } from '../modules/marketplace/index.js';
+import { aiRoutes } from '../modules/ai/index.js';
 import { env } from '../config/env.js';
 
 const rootRouter = Router();
@@ -25,6 +26,7 @@ rootRouter.get('/', (_req: Request, res: Response) => {
     openapi: '/docs.json',
     endpoints: {
       operations: ['/api/v1/health', '/api/v1/ready', '/api/v1/ai/health'],
+      ai: ['/api/v1/ai/plant-identification'],
       languages: ['/api/v1/languages'],
       crops: ['/api/v1/crops', '/api/v1/crops/search', '/api/v1/crops/{id_or_slug}'],
       diseases: ['/api/v1/diseases', '/api/v1/diseases/search', '/api/v1/diseases/{id_or_slug}'],
@@ -45,6 +47,7 @@ rootRouter.get('/', (_req: Request, res: Response) => {
 rootRouter.use('/', healthRoutes);
 
 // Feature routers
+rootRouter.use('/ai', aiRoutes);
 rootRouter.use('/languages', languageRoutes);
 rootRouter.use('/crops', cropRoutes);
 rootRouter.use('/diseases', diseaseRoutes);
