@@ -1,4 +1,4 @@
-import { SupportedCrop } from '../crop-normalization/supported-crops.js';
+import { SUPPORTED_CROPS, SupportedCrop } from '../crop-normalization/supported-crops.js';
 import {
   IDiseaseDetectionService,
   DiseaseDetectionResult,
@@ -6,7 +6,21 @@ import {
 import { env } from '../../../config/env.js';
 import { logger } from '../../../utils/logger.js';
 
+export interface TopPrediction {
+  class: string;
+  confidence: number;
+  confidence_percentage?: number;
+}
+
+/**
+ * Union of the label/score key names the inference service may use.
+ *
+ * The deployed EfficientNetV2-S service returns `predicted_class` plus
+ * `top_5_predictions`; the other keys are kept so swapping in a different
+ * model deployment does not require a code change here.
+ */
 export interface ConvNextResponsePayload {
+  predicted_class?: string;
   disease_name?: string;
   disease?: string;
   label?: string;
@@ -15,9 +29,12 @@ export interface ConvNextResponsePayload {
   prediction?: string;
   result?: string;
   confidence?: number;
+  confidence_percentage?: number;
   score?: number;
   prob?: number;
   probability?: number;
+  top_5_predictions?: TopPrediction[];
+  inference_time_ms?: number;
 }
 
 /**
@@ -27,6 +44,76 @@ export interface ConvNextResponsePayload {
  * has verified that crop.supported === true.
  */
 export class DiseaseDetectionService implements IDiseaseDetectionService {
+  /**
+   * Reads the crop half of a PlantVillage class label and maps it onto our
+   * SupportedCrop vocabulary.
+   *
+   * The dataset's crop segments are not clean identifiers — they carry
+   * qualifiers and punctuation ("Corn_(maize)", "Pepper,_bell",
+   * "Cherry_(including_sour)") — so this compares on letters only.
+   */
+  private labelCrop(rawLabel: string): string | null {
+    if (!rawLabel.includes('___')) return null;
+
+    const segment = rawLabel.split('___')[0] ?? '';
+    const letters = segment.toLowerCase().replace(/[^a-z]/g, '');
+    if (!letters) return null;
+
+    for (const candidate of SUPPORTED_CROPS) {
+      const canonical = candidate.toLowerCase().replace(/[^a-z]/g, '');
+      // "pepperbell" vs "bellpepper", "cornmaize" vs "corn": accept either
+      // direction of containment rather than demanding an exact match.
+      if (letters.includes(canonical) || canonical.includes(letters)) return candidate;
+    }
+
+    return null;
+  }
+
+  /**
+   * Chooses the prediction to report.
+   *
+   * The inference service classifies across all 38 PlantVillage classes and
+   * ignores the crop we send, so its top result can belong to a different
+   * plant entirely — a tomato photo returning "Cedar Apple Rust". Because the
+   * orchestrator has already identified the crop, we prefer the best-scoring
+   * prediction that actually belongs to it and fall back to the raw top
+   * result only when the model offers nothing for this crop.
+   */
+  private selectPrediction(
+    payload: ConvNextResponsePayload,
+    crop: SupportedCrop
+  ): { label: string; confidence: number; crossCrop: boolean } | null {
+    const globalLabel =
+      payload.predicted_class ||
+      payload.disease_name ||
+      payload.disease ||
+      payload.label ||
+      payload.class_name ||
+      payload.class ||
+      payload.prediction ||
+      payload.result;
+
+    const globalConfidence =
+      payload.confidence ?? payload.score ?? payload.prob ?? payload.probability ?? 0;
+
+    const forThisCrop = (payload.top_5_predictions ?? []).filter(
+      (entry) => entry.class && this.labelCrop(entry.class) === crop
+    );
+
+    if (forThisCrop.length > 0) {
+      const best = forThisCrop.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+      return { label: best.class, confidence: best.confidence, crossCrop: false };
+    }
+
+    if (!globalLabel) return null;
+
+    return {
+      label: globalLabel,
+      confidence: globalConfidence,
+      crossCrop: this.labelCrop(globalLabel) !== crop,
+    };
+  }
+
   /**
    * Cleans raw model class labels (e.g. "Tomato___Early_blight" -> "Early Blight")
    */
@@ -120,27 +207,14 @@ export class DiseaseDetectionService implements IDiseaseDetectionService {
 
       const payload = (await response.json()) as ConvNextResponsePayload;
 
-      const rawLabel =
-        payload.disease_name ||
-        payload.disease ||
-        payload.label ||
-        payload.class_name ||
-        payload.class ||
-        payload.prediction ||
-        payload.result;
+      logger.debug(
+        `Inference candidates: ${JSON.stringify(payload.top_5_predictions ?? [])}`
+      );
 
-      const rawConfidence =
-        payload.confidence ??
-        payload.score ??
-        payload.prob ??
-        payload.probability ??
-        0;
+      const selected = this.selectPrediction(payload, crop);
 
-      // Normalize confidence if reported as percentage (0-100) vs decimal (0-1)
-      const confidence = rawConfidence > 1 ? rawConfidence / 100 : rawConfidence;
-
-      if (!rawLabel) {
-        logger.warn(`ConvNeXt response missing disease prediction label`);
+      if (!selected) {
+        logger.warn(`Inference response missing a disease prediction label`);
         return {
           available: false,
           disease: null,
@@ -148,10 +222,23 @@ export class DiseaseDetectionService implements IDiseaseDetectionService {
         };
       }
 
-      const diseaseName = this.cleanDiseaseLabel(rawLabel, crop);
+      // Normalize confidence if reported as percentage (0-100) vs decimal (0-1)
+      const confidence =
+        selected.confidence > 1 ? selected.confidence / 100 : selected.confidence;
+
+      const diseaseName = this.cleanDiseaseLabel(selected.label, crop);
+
+      if (selected.crossCrop) {
+        // Reported rather than suppressed: the farmer still sees a result, but
+        // this is the signal that the model had no class for their crop.
+        logger.warn(
+          `Inference returned "${selected.label}", which does not belong to crop ${crop}. ` +
+            `Reporting it, but the model may not cover this crop.`
+        );
+      }
 
       logger.info(
-        `ConvNeXt disease detection completed: "${diseaseName}" (raw: "${rawLabel}") with ${(
+        `Disease detection completed: "${diseaseName}" (raw: "${selected.label}") with ${(
           confidence * 100
         ).toFixed(1)}% confidence in ${latencyMs}ms`
       );
