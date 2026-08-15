@@ -13,6 +13,8 @@
  * and cannot be logged into.
  */
 import { PrismaClient } from '@prisma/client';
+import { PLANTVILLAGE_CROPS } from './data/plantvillage-crops.js';
+import { PLANTVILLAGE_DISEASES } from './data/plantvillage-diseases.js';
 
 const prisma = new PrismaClient();
 
@@ -444,7 +446,12 @@ async function seedUsers() {
 }
 
 async function seedCrops() {
-  for (const crop of CROPS) {
+  // The advisory crops plus the twelve the disease model can classify. Without
+  // the latter a scan of, say, an apple leaf has no catalogue row to hang its
+  // guidance on.
+  const allCrops = [...CROPS, ...PLANTVILLAGE_CROPS];
+
+  for (const crop of allCrops) {
     const { seasons, translations, ...fields } = crop;
 
     const saved = await prisma.crops.upsert({
@@ -469,7 +476,7 @@ async function seedCrops() {
       });
     }
   }
-  return CROPS.length;
+  return allCrops.length;
 }
 
 async function seedCropCompanions() {
@@ -502,7 +509,11 @@ async function seedCropCompanions() {
 }
 
 async function seedDiseases() {
-  for (const disease of DISEASES) {
+  // Every class the model can predict needs a row here, otherwise a scan
+  // returns a disease name with no symptoms or treatment attached.
+  const allDiseases = [...DISEASES, ...PLANTVILLAGE_DISEASES];
+
+  for (const disease of allDiseases) {
     const { hosts, translations, ...fields } = disease;
 
     const saved = await prisma.diseases.upsert({
@@ -529,7 +540,7 @@ async function seedDiseases() {
       });
     }
   }
-  return DISEASES.length;
+  return allDiseases.length;
 }
 
 async function seedUserCrops() {

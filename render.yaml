@@ -1,0 +1,81 @@
+# Render blueprint for the LeafCare backend.
+#
+# Apply with: Render Dashboard -> New -> Blueprint, pointed at this repo.
+#
+# Secrets are declared with `sync: false`, which means Render prompts for them
+# on first deploy and stores them encrypted. They are deliberately NOT written
+# here — this file is committed.
+
+services:
+  - type: web
+    name: leafcare-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore # Closest region to the users this serves.
+    branch: main
+
+    # Returns 503 when PostgreSQL is unreachable, so a broken deploy is caught
+    # here rather than being rolled out and serving errors.
+    healthCheckPath: /api/v1/health
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Render injects PORT and expects the service to bind it.
+      - key: PORT
+        value: 5000
+
+      - key: APP_VERSION
+        value: 1.0.0
+
+      - key: LOG_LEVEL
+        value: info
+
+      # One proxy hop (Render's load balancer). Without this, rate limiting sees
+      # every request as coming from the proxy and buckets all users together.
+      - key: TRUST_PROXY
+        value: 1
+
+      # Comma-separated. Must list the deployed frontend origin, otherwise the
+      # browser blocks every call.
+      - key: CORS_ORIGIN
+        sync: false
+
+      # Supabase pooled connection (port 6543) for the app; direct connection
+      # (5432) for migrations.
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      - key: PLANTNET_API_KEY
+        sync: false
+      - key: PLANTNET_API_URL
+        value: https://my-api.plantnet.org/v2/identify/all
+      - key: PLANTNET_MIN_CONFIDENCE
+        value: "0.50"
+      - key: PLANTNET_TIMEOUT_MS
+        value: "20000"
+
+      # Disease classifier. Without this the API still serves, but /ai/health
+      # reports `not_configured` and scanning returns no prediction.
+      - key: AI_SERVICE_URL
+        value: https://efficentnet-plant-disease-detection.onrender.com
+      # Generous because the classifier's free tier cold-starts in roughly 60s.
+      - key: AI_SERVICE_TIMEOUT_MS
+        value: "90000"
+
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_GENERAL_MAX
+        value: "100"
+      - key: RATE_LIMIT_AUTH_MAX
+        value: "20"
+      - key: RATE_LIMIT_AI_MAX
+        value: "10"
+      - key: RATE_LIMIT_UPLOAD_MAX
+        value: "5"

@@ -17,7 +17,11 @@
     "postinstall": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
     "db:migrate": "prisma migrate deploy",
-    "db:status": "prisma migrate status"
+    "db:status": "prisma migrate status",
+    "predeploy": "npm run db:migrate"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   },
   "keywords": [
     "leafcare",

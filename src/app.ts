@@ -63,12 +63,19 @@ app.use(
 );
 
 // 6. Root Status Route
-app.get('/', (_req, res) => {
+app.get('/', (req, res) => {
+  // Built from the request rather than hardcoded: behind a proxy the public
+  // host and scheme are not the ones this process is listening on, and a
+  // localhost URL here is useless to anyone calling the deployed API.
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const scheme = forwardedProto ?? req.protocol;
+  const host = req.get('host');
+
   res.json({
     message: 'LeafCare Multilingual Agricultural Advisory API',
     status: 'online',
-    version: '1.0.0',
-    documentation: `http://localhost:${env.PORT}/docs`,
+    version: env.APP_VERSION,
+    documentation: host ? `${scheme}://${host}/docs` : '/docs',
     timestamp: new Date().toISOString(),
   });
 });
