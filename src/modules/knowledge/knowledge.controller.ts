@@ -69,6 +69,60 @@ export class KnowledgeController {
       next(error);
     }
   }
+
+  /** POST /api/v1/knowledge/articles — admin dashboard. Guarded by admin key. */
+  async createArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const article = await knowledgeService.createArticle(req.body);
+
+      sendSuccess({
+        res,
+        statusCode: 201,
+        message: 'Knowledge article created successfully',
+        data: article,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** PATCH /api/v1/knowledge/articles/:id_or_slug */
+  async updateArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const idOrSlug = Array.isArray(req.params.id_or_slug)
+        ? req.params.id_or_slug[0]
+        : req.params.id_or_slug;
+      const article = await knowledgeService.updateArticle(idOrSlug, req.body);
+
+      sendSuccess({
+        res,
+        statusCode: 200,
+        message: 'Knowledge article updated successfully',
+        data: article,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** DELETE /api/v1/knowledge/articles/:id_or_slug */
+  async deleteArticle(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const idOrSlug = Array.isArray(req.params.id_or_slug)
+        ? req.params.id_or_slug[0]
+        : req.params.id_or_slug;
+      const result = await knowledgeService.deleteArticle(idOrSlug);
+
+      sendSuccess({
+        res,
+        statusCode: 200,
+        message: 'Knowledge article deleted successfully',
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const knowledgeController = new KnowledgeController();

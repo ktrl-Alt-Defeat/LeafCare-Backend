@@ -88,6 +88,16 @@ const envSchema = z.object({
     .default('5')
     .transform((val) => parseInt(val, 10)),
 
+  /**
+   * Shared secret guarding the admin and seller write endpoints.
+   *
+   * Not authentication — it carries no identity and no per-user permissions.
+   * It exists so the dashboards can persist changes without leaving the
+   * knowledge base and marketplace writable by anyone. Optional: when unset the
+   * write endpoints fail closed with 403 rather than opening up.
+   */
+  LEAFCARE_ADMIN_KEY: z.string().min(16, 'LEAFCARE_ADMIN_KEY must be at least 16 characters').optional(),
+
   // --- External AI inference service ---------------------------------------
   /**
    * Base URL of the disease-prediction inference service. Left unset until that

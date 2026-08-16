@@ -18,6 +18,9 @@ datasource db {
 enum user_role {
   farmer
   expert
+  // Sells into the marketplace. Keeps full farmer access — the seller dashboard
+  // is an addition to the regular app, not a replacement for it.
+  seller
   admin
 }
 

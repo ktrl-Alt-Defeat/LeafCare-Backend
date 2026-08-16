@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { marketplaceController } from './marketplace.controller.js';
 import { validateRequest } from '../../middleware/validate.middleware.js';
-import { marketplaceQuerySchema, marketplaceParamSchema } from './marketplace.validation.js';
+import {
+  marketplaceQuerySchema,
+  marketplaceParamSchema,
+  createProductSchema,
+  updateProductSchema,
+} from './marketplace.validation.js';
+import { requireAdminKey } from '../../middleware/admin-key.middleware.js';
 
 const router = Router();
 
@@ -104,6 +110,67 @@ router.get(
   '/products/:id',
   validateRequest({ params: marketplaceParamSchema }),
   (req, res, next) => marketplaceController.getProductById(req, res, next)
+);
+
+/* -------------------------------------------------------------------------- */
+/* Seller write endpoints                                                     */
+/*                                                                            */
+/* Guarded by the shared admin key. This is not per-user authentication: the   */
+/* key proves the caller is a trusted server, not which seller they are, so    */
+/* `seller_id` is taken from the body and validated against the users table.   */
+/* Replace with real auth before this leaves pilot use.                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @openapi
+ * /api/v1/marketplace/products:
+ *   post:
+ *     summary: List a new product (seller dashboard)
+ *     tags: [Marketplace]
+ *     security: [{ AdminKey: [] }]
+ *     responses:
+ *       201: { description: Product listed }
+ *       401: { description: Missing admin key }
+ *       403: { description: Invalid admin key }
+ *       422: { description: Validation failed }
+ */
+router.post(
+  '/products',
+  requireAdminKey,
+  validateRequest({ body: createProductSchema }),
+  (req, res, next) => marketplaceController.createProduct(req, res, next)
+);
+
+/**
+ * @openapi
+ * /api/v1/marketplace/products/{id}:
+ *   patch:
+ *     summary: Update one of the seller's listings
+ *     tags: [Marketplace]
+ *     security: [{ AdminKey: [] }]
+ *     responses:
+ *       200: { description: Product updated }
+ *       404: { description: Product not found }
+ *   delete:
+ *     summary: Remove a listing (soft delete, so past orders keep resolving)
+ *     tags: [Marketplace]
+ *     security: [{ AdminKey: [] }]
+ *     responses:
+ *       200: { description: Product removed }
+ *       404: { description: Product not found }
+ */
+router.patch(
+  '/products/:id',
+  requireAdminKey,
+  validateRequest({ params: marketplaceParamSchema, body: updateProductSchema }),
+  (req, res, next) => marketplaceController.updateProduct(req, res, next)
+);
+
+router.delete(
+  '/products/:id',
+  requireAdminKey,
+  validateRequest({ params: marketplaceParamSchema }),
+  (req, res, next) => marketplaceController.deleteProduct(req, res, next)
 );
 
 export default router;

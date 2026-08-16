@@ -94,6 +94,56 @@ export class MarketplaceController {
       next(error);
     }
   }
+
+  /** POST /api/v1/marketplace/products — seller dashboard. Guarded by admin key. */
+  async createProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const product = await marketplaceService.createProduct(req.body);
+
+      sendSuccess({
+        res,
+        statusCode: 201,
+        message: 'Product listed successfully',
+        data: product,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** PATCH /api/v1/marketplace/products/:id */
+  async updateProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const product = await marketplaceService.updateProduct(id, req.body);
+
+      sendSuccess({
+        res,
+        statusCode: 200,
+        message: 'Product updated successfully',
+        data: product,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** DELETE /api/v1/marketplace/products/:id — soft delete, so past orders survive. */
+  async deleteProduct(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+      const result = await marketplaceService.deleteProduct(id);
+
+      sendSuccess({
+        res,
+        statusCode: 200,
+        message: 'Product removed from the marketplace',
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export const marketplaceController = new MarketplaceController();

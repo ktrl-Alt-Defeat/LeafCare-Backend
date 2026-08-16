@@ -89,6 +89,36 @@ export class MarketplaceRepository extends BaseRepository<
 
     return { total, items };
   }
+
+  /** Creates a listing owned by the given seller. */
+  async createProduct(data: Prisma.productsUncheckedCreateInput): Promise<products> {
+    return prisma.products.create({ data });
+  }
+
+  /** Updates a listing, ignoring rows already soft-deleted. */
+  async updateProduct(id: string, data: Prisma.productsUpdateInput): Promise<products | null> {
+    const existing = await prisma.products.findFirst({ where: { id, deleted_at: null } });
+    if (!existing) return null;
+
+    return prisma.products.update({
+      where: { id },
+      data: { ...data, updated_at: new Date() },
+    });
+  }
+
+  /**
+   * Soft delete. Order history references products, so a hard delete would
+   * break past orders; every read already filters on `deleted_at: null`.
+   */
+  async softDeleteProduct(id: string): Promise<products | null> {
+    const existing = await prisma.products.findFirst({ where: { id, deleted_at: null } });
+    if (!existing) return null;
+
+    return prisma.products.update({
+      where: { id },
+      data: { deleted_at: new Date() },
+    });
+  }
 }
 
 export const marketplaceRepository = new MarketplaceRepository();

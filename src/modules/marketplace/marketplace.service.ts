@@ -7,8 +7,10 @@ import {
   ProductListItem,
   ProductWithRelations,
 } from './marketplace.types.js';
-import { NotFoundError } from '../../utils/app-error.js';
+import { BadRequestError, NotFoundError } from '../../utils/app-error.js';
 import { PaginatedResult } from '../../repositories/base.repository.js';
+import { prisma } from '../../config/database.js';
+import type { CreateProductBody, UpdateProductBody } from './marketplace.validation.js';
 
 export class MarketplaceService {
   /**
@@ -122,6 +124,64 @@ export class MarketplaceService {
       reviews_count,
       reviews,
     };
+  }
+
+  /**
+   * Creates a listing.
+   *
+   * The seller must already exist: `seller_id` is a foreign key, and letting
+   * Prisma raise the constraint error would surface as a 500 rather than
+   * telling the caller which field is wrong.
+   */
+  async createProduct(body: CreateProductBody) {
+    const seller = await prisma.users.findFirst({
+      where: { id: body.seller_id, deleted_at: null },
+    });
+
+    if (!seller) {
+      throw new BadRequestError(`No user found with id '${body.seller_id}' to own this listing.`);
+    }
+
+    const created = await marketplaceRepository.createProduct({
+      seller_id: body.seller_id,
+      name: body.name,
+      category: body.category,
+      description: body.description ?? null,
+      price: body.price,
+      currency_code: body.currency_code,
+      unit: body.unit,
+      stock_quantity: body.stock_quantity,
+      is_organic: body.is_organic,
+      image_url: body.image_url ?? null,
+    });
+
+    return this.getProductById(created.id);
+  }
+
+  async updateProduct(id: string, body: UpdateProductBody) {
+    // An empty body would otherwise "succeed" while changing nothing, which
+    // reads as a silent failure to the caller.
+    if (Object.keys(body).length === 0) {
+      throw new BadRequestError('Provide at least one field to update.');
+    }
+
+    const updated = await marketplaceRepository.updateProduct(id, body);
+
+    if (!updated) {
+      throw new NotFoundError(`Marketplace product not found with ID '${id}'`);
+    }
+
+    return this.getProductById(updated.id);
+  }
+
+  async deleteProduct(id: string): Promise<{ id: string }> {
+    const deleted = await marketplaceRepository.softDeleteProduct(id);
+
+    if (!deleted) {
+      throw new NotFoundError(`Marketplace product not found with ID '${id}'`);
+    }
+
+    return { id: deleted.id };
   }
 }
 

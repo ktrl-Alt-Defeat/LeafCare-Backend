@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import { knowledgeController } from './knowledge.controller.js';
 import { validateRequest } from '../../middleware/validate.middleware.js';
-import { articleQuerySchema, articleParamSchema } from './knowledge.validation.js';
+import {
+  articleQuerySchema,
+  articleParamSchema,
+  createArticleSchema,
+  updateArticleSchema,
+} from './knowledge.validation.js';
+import { requireAdminKey } from '../../middleware/admin-key.middleware.js';
 
 const router = Router();
 
@@ -87,6 +93,63 @@ router.get(
   '/articles/:id_or_slug',
   validateRequest({ params: articleParamSchema, query: articleQuerySchema }),
   (req, res, next) => knowledgeController.getArticleByIdOrSlug(req, res, next)
+);
+
+/* -------------------------------------------------------------------------- */
+/* Admin write endpoints                                                      */
+/*                                                                            */
+/* Guarded by the shared admin key. Not per-user authentication — it only      */
+/* proves the caller is a trusted server. Replace before leaving pilot use.    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @openapi
+ * /api/v1/knowledge/articles:
+ *   post:
+ *     summary: Create a knowledge article (admin dashboard)
+ *     tags: [Knowledge Base]
+ *     responses:
+ *       201: { description: Article created }
+ *       401: { description: Missing admin key }
+ *       403: { description: Invalid admin key }
+ *       409: { description: Slug already exists }
+ *       422: { description: Validation failed }
+ */
+router.post(
+  '/articles',
+  requireAdminKey,
+  validateRequest({ body: createArticleSchema }),
+  (req, res, next) => knowledgeController.createArticle(req, res, next)
+);
+
+/**
+ * @openapi
+ * /api/v1/knowledge/articles/{id_or_slug}:
+ *   patch:
+ *     summary: Update an article; supplied translations are upserted per language
+ *     tags: [Knowledge Base]
+ *     responses:
+ *       200: { description: Article updated }
+ *       404: { description: Article not found }
+ *   delete:
+ *     summary: Delete an article and its translations
+ *     tags: [Knowledge Base]
+ *     responses:
+ *       200: { description: Article deleted }
+ *       404: { description: Article not found }
+ */
+router.patch(
+  '/articles/:id_or_slug',
+  requireAdminKey,
+  validateRequest({ params: articleParamSchema, body: updateArticleSchema }),
+  (req, res, next) => knowledgeController.updateArticle(req, res, next)
+);
+
+router.delete(
+  '/articles/:id_or_slug',
+  requireAdminKey,
+  validateRequest({ params: articleParamSchema }),
+  (req, res, next) => knowledgeController.deleteArticle(req, res, next)
 );
 
 export default router;

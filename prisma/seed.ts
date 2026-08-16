@@ -426,7 +426,9 @@ async function seedUsers() {
       id: ID.userSeller,
       name: 'Venkat Agri Supplies',
       email: 'venkat@leafcare.dev',
-      role: 'farmer' as const,
+      // Was 'farmer' only because the enum had no seller value until the
+      // add_seller_role migration. A seller keeps full farmer access.
+      role: 'seller' as const,
       language_code: 'te',
       district: 'Guntur',
       state: 'Andhra Pradesh',
