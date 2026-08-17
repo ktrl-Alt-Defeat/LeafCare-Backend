@@ -126,6 +126,48 @@ const envSchema = z.object({
     .string()
     .default('20000')
     .transform((val) => parseInt(val, 10)),
+
+  // --- ElevenLabs voice (text-to-speech + speech-to-text) ------------------
+  /**
+   * Optional: when unset the voice endpoints answer 503 with a clear message
+   * rather than failing deep inside a fetch. The rest of the API is unaffected,
+   * so a missing key degrades the read-aloud button instead of the whole app.
+   */
+  ELEVEN_LABS_API_KEY: z.string().min(1).optional(),
+  ELEVEN_LABS_API_URL: z.string().url().default('https://api.elevenlabs.io/v1'),
+  /**
+   * Flash is the default because this powers a tap-to-listen button: it is the
+   * lowest-latency multilingual model and the cheapest per character. It also
+   * accepts `language_code`, which pins pronunciation instead of letting the
+   * model guess from the script. Set `eleven_v3` for Telugu, Kannada and
+   * Malayalam, which the v2.5 model family does not cover.
+   */
+  ELEVEN_LABS_TTS_MODEL: z.string().default('eleven_flash_v2_5'),
+  ELEVEN_LABS_STT_MODEL: z.string().default('scribe_v1'),
+  /**
+   * Default narrator: the premade "Sarah" voice.
+   *
+   * Not every premade voice works on every plan — ElevenLabs classifies some
+   * (Rachel, Aria) as *library* voices and answers 402 for free accounts. This
+   * one is verified to synthesize on the free tier.
+   */
+  ELEVEN_LABS_VOICE_ID: z.string().default('EXAVITQu4vr4xnSDxMaL'),
+  ELEVEN_LABS_TIMEOUT_MS: z
+    .string()
+    .default('30000')
+    .transform((val) => parseInt(val, 10)),
+  /**
+   * Synthesis is billed per character, so an accidental request carrying a
+   * whole article is a real cost. The frontend trims before sending; this is
+   * the server-side backstop.
+   */
+  ELEVEN_LABS_MAX_CHARS: z
+    .string()
+    .default('2500')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val > 0, {
+      message: 'ELEVEN_LABS_MAX_CHARS must be a positive integer',
+    }),
 });
 
 /**
