@@ -50,8 +50,19 @@ export const aiLimiter = buildLimiter(env.RATE_LIMIT_AI_MAX, 'ai');
 export const uploadLimiter = buildLimiter(env.RATE_LIMIT_UPLOAD_MAX, 'upload');
 
 /**
- * Health and readiness probes must never be rate limited: an orchestrator polls
- * them continuously and a 429 would read as an outage.
+ * Live viewfinder leaf detection. Cheap, local and polled continuously while
+ * the camera is open, so it gets its own much higher ceiling.
  */
-export const skipHealthChecks = (req: Request): boolean =>
-  req.path === '/health' || req.path === '/ready';
+export const visionLimiter = buildLimiter(env.RATE_LIMIT_VISION_MAX, 'vision');
+
+/**
+ * Paths the general limiter must not apply to.
+ *
+ * Health and readiness are polled continuously by an orchestrator, where a 429
+ * would read as an outage. Live leaf detection is polled just as continuously
+ * by every open scanner, and is governed by `visionLimiter` instead - leaving
+ * it under the general ceiling would stop the guidance after a minute of aiming
+ * and take the rest of the API's budget with it.
+ */
+export const skipGeneralLimiter = (req: Request): boolean =>
+  req.path === '/health' || req.path === '/ready' || req.path === '/ai/leaf-detection';

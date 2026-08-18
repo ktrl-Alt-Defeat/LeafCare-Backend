@@ -87,6 +87,17 @@ const envSchema = z.object({
     .string()
     .default('5')
     .transform((val) => parseInt(val, 10)),
+  /**
+   * Ceiling for the live viewfinder detector.
+   *
+   * Deliberately far above RATE_LIMIT_AI_MAX: this endpoint is polled several
+   * times a second while the farmer frames a leaf, and the AI ceiling of ten a
+   * minute would cut the guidance off after seven seconds of aiming.
+   */
+  RATE_LIMIT_VISION_MAX: z
+    .string()
+    .default('300')
+    .transform((val) => parseInt(val, 10)),
 
   /**
    * Shared secret guarding the admin and seller write endpoints.
@@ -98,32 +109,55 @@ const envSchema = z.object({
    */
   LEAFCARE_ADMIN_KEY: z.string().min(16, 'LEAFCARE_ADMIN_KEY must be at least 16 characters').optional(),
 
-  // --- External AI inference service ---------------------------------------
+  // --- Inference host (both vision models, one process) --------------------
   /**
-   * Base URL of the disease-prediction inference service. Left unset until that
-   * service is deployed; /ready and /ai/health report `not_configured` rather
-   * than pretending a model is available.
+   * Base URL of the FastAPI service holding the leaf detector and the disease
+   * classifier.
+   *
+   * That service runs on a workstation and is published through a tunnel, so
+   * this is a public HTTPS URL pointing at a machine that is not always awake.
+   * Optional: unset means leaf localization is skipped and disease detection
+   * reports itself unconfigured, rather than a scan failing.
    */
-  AI_SERVICE_URL: z.string().url().optional(),
-  AI_SERVICE_TIMEOUT_MS: z
-    .string()
-    .default('30000')
-    .transform((val) => parseInt(val, 10)),
-
-  // --- YOLO11x leaf detector (Stage 1) -------------------------------------
+  INFERENCE_SERVICE_URL: z.string().url().optional(),
   /**
-   * Base URL of the leaf-localization service. Optional on purpose: unset means
-   * scans skip straight to plant identification, exactly as they did before this
-   * stage existed. It narrows the funnel, it is not load-bearing.
+   * Shared secret sent as `X-API-Key`. Must equal `API_KEY` on the inference
+   * host, which refuses to start without one.
    */
-  YOLO_SERVICE_URL: z.string().url().optional(),
-  YOLO_SERVICE_TIMEOUT_MS: z
+  INFERENCE_API_KEY: z.string().optional(),
+  /** Default deadline for an inference call. */
+  INFERENCE_TIMEOUT_MS: z
     .string()
     .default('45000')
-    .transform((val) => parseInt(val, 10))
-    .refine((val) => !isNaN(val) && val > 0, {
-      message: 'YOLO_SERVICE_TIMEOUT_MS must be a positive integer',
-    }),
+    .transform((val) => parseInt(val, 10)),
+  /**
+   * Deadline for leaf detection. Tighter than the default because the live
+   * viewfinder polls it: a frame the user has already moved past is worthless,
+   * so giving up early beats waiting.
+   */
+  INFERENCE_DETECT_TIMEOUT_MS: z
+    .string()
+    .default('20000')
+    .transform((val) => parseInt(val, 10)),
+  /**
+   * Deadline for classification. Generous: the farmer is already watching a
+   * progress animation, and the first request after the host wakes pays for
+   * weight residency.
+   */
+  INFERENCE_CLASSIFY_TIMEOUT_MS: z
+    .string()
+    .default('60000')
+    .transform((val) => parseInt(val, 10)),
+  /** Deadline for the health probes, which must not hang a dashboard. */
+  INFERENCE_HEALTH_TIMEOUT_MS: z
+    .string()
+    .default('8000')
+    .transform((val) => parseInt(val, 10)),
+
+  // --- Leaf detector request parameters ------------------------------------
+  //
+  // The detector lives on the inference host; these are the knobs this backend
+  // sends with each request. Where it lives is INFERENCE_SERVICE_URL.
   /** Detections below this score are discarded. Matches the detector default. */
   YOLO_MIN_CONFIDENCE: z
     .string()
@@ -140,36 +174,6 @@ const envSchema = z.object({
     .refine((val) => !isNaN(val) && val > 0, {
       message: 'YOLO_IMAGE_SIZE must be a positive integer',
     }),
-  /**
-   * Whether a confident "no leaf here" stops the scan.
-   *
-   * On means a photo of a wall is rejected in one second instead of spending a
-   * Pl@ntNet call to reach the same answer. Off means detection is recorded and
-   * reported but never blocks — the safer setting if false negatives on unusual
-   * crops turn out to matter more than the saved quota.
-   */
-  YOLO_GATE_ENABLED: z
-    .enum(['true', 'false'])
-    .default('true')
-    .transform((val) => val === 'true'),
-
-  // --- Pl@ntNet API Configuration -----------------------------------------
-  PLANTNET_API_KEY: z
-    .string({ required_error: 'PLANTNET_API_KEY is required' })
-    .min(1, 'PLANTNET_API_KEY cannot be empty'),
-  PLANTNET_API_URL: z
-    .string()
-    .url()
-    .default('https://my-api.plantnet.org/v2/identify/all'),
-  PLANTNET_MIN_CONFIDENCE: z
-    .string()
-    .default('0.50')
-    .transform((val) => parseFloat(val)),
-  PLANTNET_TIMEOUT_MS: z
-    .string()
-    .default('20000')
-    .transform((val) => parseInt(val, 10)),
-
   // --- ElevenLabs voice (text-to-speech + speech-to-text) ------------------
   /**
    * Optional: when unset the voice endpoints answer 503 with a clear message

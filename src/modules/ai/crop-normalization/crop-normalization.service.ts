@@ -1,22 +1,97 @@
-import { SUPPORTED_CROP_DEFINITIONS } from './supported-crops.js';
+import {
+  SUPPORTED_CROPS,
+  SUPPORTED_CROP_DEFINITIONS,
+  SupportedCrop,
+} from './supported-crops.js';
 import { CropNormalizationResult } from './crop-normalization.types.js';
 import { logger } from '../../../utils/logger.js';
 
 /**
- * Normalizes plant species / common names from Pl@ntNet to LeafCare crop categories.
+ * Crop segments whose letters neither contain nor are contained by the
+ * canonical crop name. Only entries that plain letter comparison gets wrong
+ * belong here: "corn_(maize)" and "cherry_(including_sour)" both resolve on
+ * their own, but "pepper,_bell" and "bell_pepper" share no containment.
+ */
+const CROP_SEGMENT_ALIASES: Record<string, SupportedCrop> = {
+  pepperbell: 'BELL_PEPPER',
+  bellpepper: 'BELL_PEPPER',
+  pepper: 'BELL_PEPPER',
+};
+
+/**
+ * Maps what the models say onto the 14 crop categories LeafCare supports.
  *
- * Enforces a strict 5-stage matching strategy to prevent false-positive crop classification:
- * 1. Exact scientific species match
- * 2. Explicitly approved scientific aliases
- * 3. Explicitly approved common-name aliases
- * 4. Explicitly verified species mappings
- * 5. Otherwise UNSUPPORTED (supported = false)
+ * There are two ways in. `normalizeFromLabel` reads the crop out of a
+ * PlantVillage class label — this is the one the scan pipeline uses, because
+ * the classifier's own label is now the only statement anyone makes about which
+ * plant this is. `normalizeCrop` matches a free-text plant name against the
+ * botanical vocabulary, and remains for callers that have a name from somewhere
+ * else.
  *
- * NO BLIND GENUS MATCHING IS ALLOWED.
+ * Both fail closed. An unrecognised plant is `supported: false`, never a guess.
  */
 export class CropNormalizationService {
   /**
-   * Normalizes plant identification metadata against the 14 supported crop categories.
+   * Reads the crop half of a class label such as `tomato___early_blight`.
+   *
+   * The dataset's crop segments are not clean identifiers — they carry
+   * qualifiers and punctuation ("Corn_(maize)", "Pepper,_bell",
+   * "cherry_including_sour") — so this compares on letters only, and is
+   * case-insensitive because model deployments disagree on casing.
+   */
+  public cropFromLabel(rawLabel: string): SupportedCrop | null {
+    if (!rawLabel) return null;
+
+    const segment = rawLabel.includes('___') ? rawLabel.split('___')[0] ?? '' : rawLabel;
+    const letters = segment.toLowerCase().replace(/[^a-z]/g, '');
+    if (!letters) return null;
+
+    const alias = CROP_SEGMENT_ALIASES[letters];
+    if (alias) return alias;
+
+    for (const candidate of SUPPORTED_CROPS) {
+      const canonical = candidate.toLowerCase().replace(/[^a-z]/g, '');
+      // "cornmaize" vs "corn": accept either direction of containment rather
+      // than demanding an exact match.
+      if (letters.includes(canonical) || canonical.includes(letters)) return candidate;
+    }
+
+    return null;
+  }
+
+  /**
+   * Normalizes a model class label into the crop the scan reports.
+   *
+   * The scientific name comes from our own botanical vocabulary rather than
+   * from the model, which only knows crop names — so it is the species the crop
+   * category stands for, not an identification of this particular specimen.
+   */
+  public normalizeFromLabel(rawLabel: string): CropNormalizationResult {
+    const crop = this.cropFromLabel(rawLabel);
+
+    if (!crop) {
+      logger.info(`Crop normalization: label "${rawLabel}" maps to no supported crop.`);
+      return { supported: false, crop: null, name: 'Unknown Plant', scientificName: null };
+    }
+
+    const definition = SUPPORTED_CROP_DEFINITIONS[crop];
+    return {
+      supported: true,
+      crop,
+      name: definition.displayName,
+      scientificName: definition.scientificNames[0] ?? null,
+    };
+  }
+
+  /**
+   * Normalizes a free-text plant name against the 14 supported crop categories.
+   *
+   * Five stages, and no blind genus matching:
+   * 1. Exact scientific species match
+   * 2. Approved scientific aliases
+   * 3. Approved common-name aliases
+   * 4. Verified species mappings
+   * 5. Otherwise UNSUPPORTED
    */
   public normalizeCrop(
     plantName: string,

@@ -1,269 +1,225 @@
 import { env } from '../../../config/env.js';
 import { logger } from '../../../utils/logger.js';
+import { InferenceClient, inferenceClient } from '../inference-client/inference-client.js';
+import {
+  InferenceBox,
+  InferenceDetectionPayload,
+  InferenceHealthPayload,
+  InferenceReadinessPayload,
+} from '../inference-client/inference-client.types.js';
 import { ILeafDetectionService } from './leaf-detection.interface.js';
 import {
   LeafBoundingBox,
+  LeafCrop,
   LeafDetectionResult,
   LeafDetectorStatus,
-  YoloHealthPayload,
-  YoloPredictPayload,
-  YoloPrediction,
 } from './leaf-detection.types.js';
 
 /**
- * Adapter for the YOLO11x leaf detector (Stage 1).
+ * Adapter for the leaf detector (Stage 0), hosted with the disease classifier
+ * in one FastAPI process on a workstation.
  *
- * Runs ahead of Pl@ntNet so a frame with no leaf in it is rejected before it
- * costs a third-party identification call. Detection is advisory, not
- * authoritative: the detector is a single CPU-bound container that restarts
- * under load, so every transport fault resolves to `unavailable` and the
- * orchestrator carries on. A flaky Stage 1 must never take Stage 2 down with it.
- *
- * Only `/api/predict` is used. The service also exposes `/api/capture`, which
- * additionally writes an annotated frame and one file per detected leaf; that
- * endpoint was observed completing its work and then killing the container
- * before it could respond, so it is deliberately not called from here.
+ * A helper, never a gate. When it finds a leaf, the crop it cuts out is what
+ * the classifier reads; when it finds nothing, is unreachable, or was never
+ * configured, the scan carries on with the frame as submitted. Every transport
+ * fault resolves to `unavailable` rather than throwing, because a detector
+ * outage must never be able to refuse a farmer a diagnosis.
  */
 export class LeafDetectionService implements ILeafDetectionService {
-  /** Pixel area of a box. Boxes are xyxy, so this is a corner subtraction. */
-  private area(box: LeafBoundingBox): number {
-    const [x1, y1, x2, y2] = box.boxPixel;
-    return Math.abs((x2 - x1) * (y2 - y1));
+  /** A detection is only usable if it carries well-formed geometry and a score. */
+  private toBox(box: InferenceBox | null | undefined): LeafBoundingBox | null {
+    if (!box) return null;
+
+    const { confidence, box_pixel: pixel, box_norm: norm } = box;
+    if (typeof confidence !== 'number') return null;
+    if (!Array.isArray(pixel) || pixel.length !== 4) return null;
+    if (!Array.isArray(norm) || norm.length !== 4) return null;
+
+    return {
+      confidence: Number(confidence.toFixed(4)),
+      boxPixel: [pixel[0], pixel[1], pixel[2], pixel[3]],
+      boxNorm: [norm[0], norm[1], norm[2], norm[3]],
+    };
   }
 
   /**
-   * Picks the crop candidate.
+   * Decodes the ROI the host cut out, when it sent one it stands behind.
    *
-   * Largest area, not highest confidence: on a real photo the detector returns
-   * many overlapping boxes, and the most confident is often a small fragment of
-   * a leaf rather than the leaf the user was aiming at. Area is the better proxy
-   * for subject-of-the-photo.
+   * A rejected crop is skipped deliberately. The host measured that classifying
+   * a fragment is worse than classifying the frame it came from, and it reports
+   * that verdict on the response; ignoring it here to "use the crop anyway"
+   * would trade accuracy for nothing.
    */
-  private selectBest(boxes: LeafBoundingBox[]): LeafBoundingBox | null {
-    if (boxes.length === 0) return null;
-    return boxes.reduce((best, candidate) =>
-      this.area(candidate) > this.area(best) ? candidate : best
-    );
-  }
+  private toCrop(payload: InferenceDetectionPayload): LeafCrop | null {
+    const roi = payload.roi;
+    if (!roi?.image_base64) return null;
 
-  /** Keep only well-formed detections that clear the confidence floor. */
-  private toBoxes(predictions: YoloPrediction[]): LeafBoundingBox[] {
-    const floor = env.YOLO_MIN_CONFIDENCE;
+    if (roi.accepted === false) {
+      logger.info(`Leaf ROI returned but not used: ${roi.reason ?? 'host rejected the crop'}`);
+      return null;
+    }
 
-    return predictions.reduce<LeafBoundingBox[]>((acc, prediction) => {
-      const confidence = prediction.confidence;
-      const pixel = prediction.box_pixel;
-      const norm = prediction.box_norm;
+    const encoded = roi.image_base64;
+    // Tolerate a data-URL prefix even though the host sends bare base64.
+    const bare = encoded.includes(',') ? encoded.slice(encoded.indexOf(',') + 1) : encoded;
 
-      if (typeof confidence !== 'number' || confidence < floor) return acc;
-      if (!Array.isArray(pixel) || pixel.length !== 4) return acc;
-      if (!Array.isArray(norm) || norm.length !== 4) return acc;
+    try {
+      const buffer = Buffer.from(bare, 'base64');
+      if (buffer.length === 0) return null;
 
-      acc.push({
-        confidence: Number(confidence.toFixed(4)),
-        boxPixel: [pixel[0], pixel[1], pixel[2], pixel[3]],
-        boxNorm: [norm[0], norm[1], norm[2], norm[3]],
-      });
-      return acc;
-    }, []);
-  }
-
-  /** Highest confidence across raw predictions, before the floor is applied. */
-  private topConfidenceOf(predictions: YoloPrediction[]): number | null {
-    return predictions.reduce<number | null>((max, prediction) => {
-      const confidence = prediction.confidence;
-      if (typeof confidence !== 'number') return max;
-      return max === null || confidence > max ? confidence : max;
-    }, null);
+      return {
+        buffer,
+        mimeType: 'image/jpeg',
+        ...(roi.roi_id ? { roiId: roi.roi_id } : {}),
+        ...(roi.width !== undefined ? { width: roi.width } : {}),
+        ...(roi.height !== undefined ? { height: roi.height } : {}),
+        ...(roi.confidence !== undefined ? { confidence: roi.confidence } : {}),
+      };
+    } catch {
+      logger.warn('Leaf detector returned a crop that could not be base64-decoded.');
+      return null;
+    }
   }
 
   public async detectLeaf(
     imageBuffer: Buffer,
-    mimeType: string = 'image/jpeg'
+    mimeType: string = 'image/jpeg',
+    options: { returnCrop?: boolean; requestId?: string } = {}
   ): Promise<LeafDetectionResult> {
-    if (!env.YOLO_SERVICE_URL) {
+    const form = new FormData();
+    form.append('image', InferenceClient.filePart(imageBuffer, mimeType), 'frame.jpg');
+    form.append('confidence', String(env.YOLO_MIN_CONFIDENCE));
+    form.append('image_size', String(env.YOLO_IMAGE_SIZE));
+    // The crop is only requested on the capture path. The viewfinder polls this
+    // several times a second and wants boxes alone; asking for a crop would add
+    // a JPEG encode and a base64 payload to every frame.
+    form.append('return_roi', options.returnCrop ? 'true' : 'false');
+    form.append('return_roi_image', options.returnCrop ? 'true' : 'false');
+
+    const result = await inferenceClient.postForm<InferenceDetectionPayload>(
+      '/v1/leaf/detect',
+      form,
+      {
+        timeoutMs: env.INFERENCE_DETECT_TIMEOUT_MS,
+        requestId: options.requestId,
+        label: 'leaf/detect',
+      }
+    );
+
+    if (!result.ok) {
       return {
-        status: 'not_configured',
+        status: result.kind === 'not_configured' ? 'not_configured' : 'unavailable',
         leafCount: 0,
         topConfidence: null,
         best: null,
-        message:
-          'YOLO_SERVICE_URL is unset. Leaf localization is skipped and the image ' +
-          'goes straight to plant identification.',
+        crop: null,
+        ...(result.latencyMs ? { latencyMs: result.latencyMs } : {}),
+        message: result.message,
       };
     }
 
-    const endpoint = `${env.YOLO_SERVICE_URL.replace(/\/$/, '')}/api/predict`;
-    const startedAt = Date.now();
+    const payload = result.data;
+    const boxes = (payload.detections ?? [])
+      .map((entry) => this.toBox(entry))
+      .filter((box): box is LeafBoundingBox => box !== null);
 
-    // Field name is `file`. The disease service uses `image`; sending `image`
-    // here returns a 422 from FastAPI request validation.
-    const formData = new FormData();
-    const blob = new Blob([new Uint8Array(imageBuffer)], { type: mimeType });
-    formData.append('file', blob, 'frame.jpg');
-    formData.append('conf', String(env.YOLO_MIN_CONFIDENCE));
-    formData.append('imgsz', String(env.YOLO_IMAGE_SIZE));
+    const topConfidence =
+      typeof payload.top_confidence === 'number'
+        ? Number(payload.top_confidence.toFixed(4))
+        : null;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.YOLO_SERVICE_TIMEOUT_MS);
-
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-      });
-
-      const latencyMs = Date.now() - startedAt;
-
-      if (!response.ok) {
-        // A 502 here is the container having just restarted; the next request
-        // usually succeeds. Advisory, so this does not fail the scan.
-        logger.warn(`Leaf detector returned HTTP ${response.status} in ${latencyMs}ms`);
-        return {
-          status: 'unavailable',
-          leafCount: 0,
-          topConfidence: null,
-          best: null,
-          latencyMs,
-          message: `Leaf detector responded with HTTP ${response.status}.`,
-        };
-      }
-
-      const payload = (await response.json()) as YoloPredictPayload;
-      const predictions = Array.isArray(payload.predictions) ? payload.predictions : [];
-
-      const topConfidence = this.topConfidenceOf(predictions);
-      const boxes = this.toBoxes(predictions);
-
-      if (boxes.length === 0) {
-        logger.info(
-          `Leaf detection found no leaf above ${env.YOLO_MIN_CONFIDENCE} ` +
-            `(best was ${topConfidence ?? 'none'}) in ${latencyMs}ms`
-        );
-        return {
-          status: 'no_leaf',
-          leafCount: 0,
-          topConfidence: topConfidence !== null ? Number(topConfidence.toFixed(4)) : null,
-          best: null,
-          latencyMs,
-          message: 'No leaf was found in this image.',
-        };
-      }
-
-      const best = this.selectBest(boxes);
-
+    if (boxes.length === 0) {
       logger.info(
-        `Leaf detection found ${boxes.length} leaf(s), best ${(
-          (best?.confidence ?? 0) * 100
-        ).toFixed(1)}% in ${latencyMs}ms`
+        `Leaf detection found no leaf above ${env.YOLO_MIN_CONFIDENCE} ` +
+          `(best was ${topConfidence ?? 'none'}) in ${result.latencyMs}ms`
       );
-
       return {
-        status: 'detected',
-        leafCount: boxes.length,
-        topConfidence: topConfidence !== null ? Number(topConfidence.toFixed(4)) : null,
-        best,
-        latencyMs,
-      };
-    } catch (error) {
-      const latencyMs = Date.now() - startedAt;
-      const aborted = error instanceof Error && error.name === 'AbortError';
-
-      logger.warn(
-        `Leaf detection failed (${latencyMs}ms): ${
-          aborted ? 'Timeout' : error instanceof Error ? error.message : String(error)
-        }`
-      );
-
-      return {
-        status: 'unavailable',
+        status: 'no_leaf',
         leafCount: 0,
-        topConfidence: null,
+        topConfidence,
         best: null,
-        latencyMs,
-        message: aborted
-          ? `Leaf detection timed out after ${env.YOLO_SERVICE_TIMEOUT_MS}ms.`
-          : 'Leaf detection service is currently unreachable.',
+        crop: null,
+        latencyMs: result.latencyMs,
+        message: 'No leaf was found in this image.',
       };
-    } finally {
-      clearTimeout(timeout);
     }
+
+    const best = this.toBox(payload.best) ?? boxes[0];
+    const crop = options.returnCrop ? this.toCrop(payload) : null;
+
+    logger.info(
+      `Leaf detection found ${boxes.length} leaf(s), best ${((best?.confidence ?? 0) * 100).toFixed(
+        1
+      )}% in ${result.latencyMs}ms${crop ? ` (ROI ${crop.width}x${crop.height} accepted)` : ''}`
+    );
+
+    return {
+      status: 'detected',
+      leafCount: boxes.length,
+      topConfidence,
+      best,
+      crop,
+      latencyMs: result.latencyMs,
+    };
   }
 
   public async checkStatus(): Promise<LeafDetectorStatus> {
-    if (!env.YOLO_SERVICE_URL) {
+    if (!inferenceClient.configured) {
       return {
         status: 'not_configured',
         configured: false,
-        detail: 'YOLO_SERVICE_URL is unset. Leaf localization is skipped; scans still run.',
+        detail:
+          'INFERENCE_SERVICE_URL is unset. Leaf localization is skipped; scans still run.',
       };
     }
 
-    const endpoint = `${env.YOLO_SERVICE_URL.replace(/\/$/, '')}/api/health`;
-    const startedAt = Date.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), env.YOLO_SERVICE_TIMEOUT_MS);
+    const endpoint = inferenceClient.url('/ready');
+    const [health, readiness] = await Promise.all([
+      inferenceClient.getJson<InferenceHealthPayload>('/health'),
+      inferenceClient.getJson<InferenceReadinessPayload>('/ready'),
+    ]);
 
-    try {
-      const response = await fetch(endpoint, {
-        signal: controller.signal,
-        headers: { Accept: 'application/json' },
-      });
-      const latencyMs = Date.now() - startedAt;
-
-      if (!response.ok) {
-        return {
-          status: 'down',
-          configured: true,
-          endpoint,
-          latencyMs,
-          detail: `Leaf detector responded with HTTP ${response.status}`,
-        };
-      }
-
-      const payload = (await response.json()) as YoloHealthPayload;
-
-      // This endpoint answers 200 while weights are still downloading, by
-      // design, so a `healthy` status alone does not mean it can serve a
-      // prediction. `model_status` is the field that actually decides.
-      const ready = payload.model_status === 'ready';
-
-      return {
-        status: ready ? 'up' : 'down',
-        configured: true,
-        endpoint,
-        latencyMs,
-        ...(ready
-          ? {}
-          : { detail: `Detector reachable but model_status is "${payload.model_status}"` }),
-        model: {
-          service: payload.service,
-          modelStatus: payload.model_status,
-          parametersMillion: payload.parameters_million,
-          device: payload.device,
-          gpuAvailable: payload.cuda_available,
-          uptimeSeconds: payload.uptime_seconds,
-        },
-      };
-    } catch (error) {
-      const latencyMs = Date.now() - startedAt;
-      const aborted = error instanceof Error && error.name === 'AbortError';
-
+    if (!health.ok) {
       return {
         status: 'down',
         configured: true,
         endpoint,
-        latencyMs,
-        detail: aborted
-          ? `No response within ${env.YOLO_SERVICE_TIMEOUT_MS}ms`
-          : error instanceof Error
-          ? error.message
-          : 'Unknown error contacting the leaf detector',
+        latencyMs: health.latencyMs,
+        detail: health.message,
       };
-    } finally {
-      clearTimeout(timeout);
     }
+
+    // `/ready` answers 503 until every model is resident, so a failure here is
+    // still informative: the host is up, the model is not.
+    const detector = readiness.ok
+      ? (readiness.data.models ?? []).find((model) => model.task === 'leaf-detection')
+      : undefined;
+
+    const ready = detector?.status === 'ready';
+
+    return {
+      status: ready ? 'up' : 'down',
+      configured: true,
+      endpoint,
+      latencyMs: health.latencyMs,
+      ...(ready
+        ? {}
+        : {
+            detail:
+              detector?.detail ??
+              `Inference host reachable but the detector reports "${detector?.status ?? 'unknown'}".`,
+          }),
+      model: {
+        service: health.data.service,
+        modelStatus: detector?.status,
+        parametersMillion: detector?.parameters
+          ? Number((detector.parameters / 1e6).toFixed(2))
+          : undefined,
+        device: health.data.device,
+        gpuAvailable: health.data.cuda_available,
+        uptimeSeconds: health.data.uptime_seconds,
+      },
+    };
   }
 }
 

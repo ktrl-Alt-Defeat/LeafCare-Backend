@@ -50,23 +50,44 @@ services:
       - key: DIRECT_URL
         sync: false
 
-      - key: PLANTNET_API_KEY
+      # --- Inference host ----------------------------------------------------
+      # Both vision models in one FastAPI process on a GPU workstation, reached
+      # over a tunnel. Set this to the tunnel's public HTTPS URL, with no
+      # trailing slash and no path.
+      #
+      # Unset, the API still serves everything else: /ai/health reports
+      # `not_configured` and a scan returns no diagnosis rather than failing.
+      - key: INFERENCE_SERVICE_URL
         sync: false
-      - key: PLANTNET_API_URL
-        value: https://my-api.plantnet.org/v2/identify/all
-      - key: PLANTNET_MIN_CONFIDENCE
-        value: "0.50"
-      - key: PLANTNET_TIMEOUT_MS
+
+      # Must equal API_KEY on the inference host. The host answers 401 without
+      # it, and the backend logs that as a misconfiguration rather than as
+      # another flaky-tunnel warning.
+      - key: INFERENCE_API_KEY
+        sync: false
+
+      - key: INFERENCE_TIMEOUT_MS
+        value: "45000"
+      # Tighter: the live viewfinder polls detection, and a frame the user has
+      # already moved past is worthless.
+      - key: INFERENCE_DETECT_TIMEOUT_MS
         value: "20000"
+      # Generous: the farmer is watching a progress animation, and the first
+      # request after the workstation wakes pays for weight residency.
+      - key: INFERENCE_CLASSIFY_TIMEOUT_MS
+        value: "60000"
+      - key: INFERENCE_HEALTH_TIMEOUT_MS
+        value: "8000"
 
-      # Disease classifier. Without this the API still serves, but /ai/health
-      # reports `not_configured` and scanning returns no prediction.
-      - key: AI_SERVICE_URL
-        value: https://efficentnet-plant-disease-detection.onrender.com
-      # Generous because the classifier's free tier cold-starts in roughly 60s.
-      - key: AI_SERVICE_TIMEOUT_MS
-        value: "90000"
+      # --- Leaf detector request parameters ----------------------------------
+      # Knobs sent with each detection request. Detection is advisory: finding
+      # no leaf means the full frame is classified, never that the scan stops.
+      - key: YOLO_MIN_CONFIDENCE
+        value: "0.35"
+      - key: YOLO_IMAGE_SIZE
+        value: "640"
 
+      # --- Rate limiting -----------------------------------------------------
       - key: RATE_LIMIT_ENABLED
         value: "true"
       - key: RATE_LIMIT_WINDOW_MS
@@ -79,3 +100,16 @@ services:
         value: "10"
       - key: RATE_LIMIT_UPLOAD_MAX
         value: "5"
+      # The viewfinder detector is polled several times a second while a farmer
+      # frames a leaf; the AI ceiling would cut guidance off after seven
+      # seconds of aiming.
+      - key: RATE_LIMIT_VISION_MAX
+        value: "300"
+
+      # --- Optional ----------------------------------------------------------
+      # Guards the admin and seller write endpoints. Unset, they fail closed.
+      - key: LEAFCARE_ADMIN_KEY
+        sync: false
+      # Unset, the voice endpoints answer 503 and nothing else is affected.
+      - key: ELEVEN_LABS_API_KEY
+        sync: false

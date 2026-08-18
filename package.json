@@ -9,7 +9,7 @@
     "build": "npm run clean && tsc",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/unit/crop-normalization.test.ts tests/unit/disease-detection.test.ts tests/integration/plant-identification-pipeline.test.ts",
+    "test": "tsx --test tests/unit/crop-normalization.test.ts tests/unit/disease-detection.test.ts tests/unit/novelty-gate.test.ts tests/integration/scan-pipeline.test.ts",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"src/**/*.ts\"",
     "db:pull": "prisma db pull",

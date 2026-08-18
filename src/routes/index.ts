@@ -27,7 +27,7 @@ rootRouter.get('/', (_req: Request, res: Response) => {
     openapi: '/docs.json',
     endpoints: {
       operations: ['/api/v1/health', '/api/v1/ready', '/api/v1/ai/health'],
-      ai: ['/api/v1/ai/plant-identification'],
+      ai: ['/api/v1/ai/leaf-detection', '/api/v1/ai/plant-identification'],
       voice: ['/api/v1/voice/status', '/api/v1/voice/speech', '/api/v1/voice/transcribe'],
       languages: ['/api/v1/languages'],
       crops: ['/api/v1/crops', '/api/v1/crops/search', '/api/v1/crops/{id_or_slug}'],

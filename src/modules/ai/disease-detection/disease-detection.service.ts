@@ -1,26 +1,42 @@
-import { SUPPORTED_CROPS, SupportedCrop } from '../crop-normalization/supported-crops.js';
+import { SupportedCrop } from '../crop-normalization/supported-crops.js';
+import { cropNormalizationService } from '../crop-normalization/crop-normalization.service.js';
 import {
-  IDiseaseDetectionService,
   DiseaseDetectionResult,
+  IDiseaseDetectionService,
+  RankedDisease,
 } from './disease-detection.interface.js';
 import { env } from '../../../config/env.js';
 import { logger } from '../../../utils/logger.js';
+import { InferenceClient, inferenceClient } from '../inference-client/inference-client.js';
+import { InferenceClassificationPayload } from '../inference-client/inference-client.types.js';
 
+/** A ranked entry as the older PlantVillage services emit it. */
 export interface TopPrediction {
   class: string;
   confidence: number;
   confidence_percentage?: number;
 }
 
+/** What the classifier is asked to read. */
+export interface DiseaseDetectionInput {
+  /** The image bytes. Sent only when no ROI handle is available. */
+  buffer: Buffer;
+  /**
+   * Handle for a crop the inference host is already holding from the detect
+   * call. Quoting it skips a second upload of the same pixels.
+   */
+  roiId?: string;
+  requestId?: string;
+}
+
 /**
- * Union of the label/score key names the inference service may use.
+ * Union of the label/score key names an inference service may use.
  *
- * The deployed EfficientNetV2-S service returns `predicted_class` plus
- * `top_5_predictions`; the other keys are kept so swapping in a different
- * model deployment does not require a code change here.
+ * The DINOv2 host returns `predicted_class` plus a full `top_k` ranking; the
+ * EfficientNetV2-S deployment it replaced returned `top_5_predictions`. Both
+ * shapes are read so a change of served model is a URL change and nothing more.
  */
-export interface ConvNextResponsePayload {
-  predicted_class?: string;
+export interface DiseaseResponsePayload extends InferenceClassificationPayload {
   disease_name?: string;
   disease?: string;
   label?: string;
@@ -28,62 +44,46 @@ export interface ConvNextResponsePayload {
   class_name?: string;
   prediction?: string;
   result?: string;
-  confidence?: number;
-  confidence_percentage?: number;
   score?: number;
   prob?: number;
   probability?: number;
   top_5_predictions?: TopPrediction[];
-  inference_time_ms?: number;
 }
 
+/** Retained under its previous name so existing imports keep compiling. */
+export type ConvNextResponsePayload = DiseaseResponsePayload;
+
+/** Rescales a score reported as a percentage onto the 0-1 range. */
+const toUnitScale = (value: number): number => (value > 1 ? value / 100 : value);
+
 /**
- * Service adapter for the ConvNeXt disease detection model.
+ * Adapter for the disease classifier (DINOv2 ViT-B/14) on the inference host.
  *
- * IMPORTANT: ConvNeXt MUST ONLY be called after the backend orchestrator
- * has verified that crop.supported === true.
+ * It classifies; it does not decide. The full ranking comes back along with the
+ * host's novelty verdict, and the orchestrator applies the product rules: which
+ * crop this is, whether that crop is supported, and whether the answer is
+ * trustworthy enough to put in front of a farmer.
  */
 export class DiseaseDetectionService implements IDiseaseDetectionService {
-  /**
-   * Reads the crop half of a PlantVillage class label and maps it onto our
-   * SupportedCrop vocabulary.
-   *
-   * The dataset's crop segments are not clean identifiers — they carry
-   * qualifiers and punctuation ("Corn_(maize)", "Pepper,_bell",
-   * "Cherry_(including_sour)") — so this compares on letters only.
-   */
-  private labelCrop(rawLabel: string): string | null {
-    if (!rawLabel.includes('___')) return null;
+  /** Flattens whichever ranking the host sent into one list, on a 0-1 scale. */
+  private rankedCandidates(payload: DiseaseResponsePayload): RankedDisease[] {
+    const fromTopK = (payload.top_k ?? [])
+      .filter((entry) => typeof entry?.label === 'string' && typeof entry?.confidence === 'number')
+      .map((entry) => ({
+        label: entry.label as string,
+        confidence: toUnitScale(entry.confidence as number),
+      }));
 
-    const segment = rawLabel.split('___')[0] ?? '';
-    const letters = segment.toLowerCase().replace(/[^a-z]/g, '');
-    if (!letters) return null;
+    const fromTopFive = (payload.top_5_predictions ?? [])
+      .filter((entry) => typeof entry?.class === 'string' && typeof entry?.confidence === 'number')
+      .map((entry) => ({ label: entry.class, confidence: toUnitScale(entry.confidence) }));
 
-    for (const candidate of SUPPORTED_CROPS) {
-      const canonical = candidate.toLowerCase().replace(/[^a-z]/g, '');
-      // "pepperbell" vs "bellpepper", "cornmaize" vs "corn": accept either
-      // direction of containment rather than demanding an exact match.
-      if (letters.includes(canonical) || canonical.includes(letters)) return candidate;
-    }
-
-    return null;
+    return [...fromTopK, ...fromTopFive];
   }
 
-  /**
-   * Chooses the prediction to report.
-   *
-   * The inference service classifies across all 38 PlantVillage classes and
-   * ignores the crop we send, so its top result can belong to a different
-   * plant entirely — a tomato photo returning "Cedar Apple Rust". Because the
-   * orchestrator has already identified the crop, we prefer the best-scoring
-   * prediction that actually belongs to it and fall back to the raw top
-   * result only when the model offers nothing for this crop.
-   */
-  private selectPrediction(
-    payload: ConvNextResponsePayload,
-    crop: SupportedCrop
-  ): { label: string; confidence: number; crossCrop: boolean } | null {
-    const globalLabel =
+  /** The single label the host ranked first, across every class. */
+  private topLabel(payload: DiseaseResponsePayload): string | undefined {
+    return (
       payload.predicted_class ||
       payload.disease_name ||
       payload.disease ||
@@ -91,31 +91,40 @@ export class DiseaseDetectionService implements IDiseaseDetectionService {
       payload.class_name ||
       payload.class ||
       payload.prediction ||
-      payload.result;
-
-    const globalConfidence =
-      payload.confidence ?? payload.score ?? payload.prob ?? payload.probability ?? 0;
-
-    const forThisCrop = (payload.top_5_predictions ?? []).filter(
-      (entry) => entry.class && this.labelCrop(entry.class) === crop
+      payload.result
     );
+  }
 
-    if (forThisCrop.length > 0) {
-      const best = forThisCrop.reduce((a, b) => (b.confidence > a.confidence ? b : a));
-      return { label: best.class, confidence: best.confidence, crossCrop: false };
-    }
+  /**
+   * Best-scoring class belonging to `crop`, with its probability conditioned on
+   * that crop.
+   *
+   * Conditioning matters once the crop is settled. The raw score is spread over
+   * all 38 classes, so the right answer for a potato leaf can read as 0.02 when
+   * most of the mass sits on the same disease under tomato. Renormalising over
+   * the crop's own classes answers the question actually being asked - given
+   * this is a potato, which potato disease is it.
+   */
+  public selectForCrop(
+    ranked: RankedDisease[],
+    crop: SupportedCrop
+  ): { label: string; confidence: number } | null {
+    const forCrop = ranked.filter(
+      (entry) => cropNormalizationService.cropFromLabel(entry.label) === crop
+    );
+    if (forCrop.length === 0) return null;
 
-    if (!globalLabel) return null;
+    const best = forCrop.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+    const cropMass = forCrop.reduce((sum, entry) => sum + entry.confidence, 0);
 
     return {
-      label: globalLabel,
-      confidence: globalConfidence,
-      crossCrop: this.labelCrop(globalLabel) !== crop,
+      label: best.label,
+      confidence: cropMass > 0 ? best.confidence / cropMass : best.confidence,
     };
   }
 
   /**
-   * Cleans raw model class labels (e.g. "Tomato___Early_blight" -> "Early Blight")
+   * Cleans raw model class labels (e.g. "tomato___early_blight" -> "Early Blight")
    */
   public cleanDiseaseLabel(rawLabel: string, crop: SupportedCrop): string {
     if (!rawLabel) return 'Unknown Disease';
@@ -147,129 +156,99 @@ export class DiseaseDetectionService implements IDiseaseDetectionService {
     return cleaned || 'Healthy';
   }
 
-  /**
-   * Performs disease detection for a verified supported crop using ConvNeXt inference endpoint.
-   *
-   * @param imageBuffer Image buffer
-   * @param crop Verified supported crop
-   */
-  public async detectDisease(
-    imageBuffer: Buffer,
-    crop: SupportedCrop
+  public async classify(
+    input: Buffer | DiseaseDetectionInput
   ): Promise<DiseaseDetectionResult> {
-    logger.info(`ConvNeXt disease detection started for crop: ${crop}`);
+    const request: DiseaseDetectionInput = Buffer.isBuffer(input) ? { buffer: input } : input;
 
-    if (!env.AI_SERVICE_URL) {
-      logger.info(
-        `AI_SERVICE_URL is unset. ConvNeXt inference service not configured.`
-      );
+    logger.info(
+      'Disease classification started' +
+        (request.roiId ? ' (classifying the cached ROI, no re-upload)' : '')
+    );
+
+    if (!inferenceClient.configured) {
+      logger.info('INFERENCE_SERVICE_URL is unset. Disease inference host not configured.');
+      return {
+        available: false,
+        disease: null,
+        message: 'Disease detection model service is not configured for this environment.',
+      };
+    }
+
+    const form = new FormData();
+    if (request.roiId) {
+      form.append('roi_id', request.roiId);
+    } else {
+      form.append('image', InferenceClient.filePart(request.buffer, 'image/jpeg'), 'leaf.jpg');
+    }
+
+    const result = await inferenceClient.postForm<DiseaseResponsePayload>(
+      '/v1/disease/classify',
+      form,
+      {
+        timeoutMs: env.INFERENCE_CLASSIFY_TIMEOUT_MS,
+        ...(request.requestId ? { requestId: request.requestId } : {}),
+        label: 'disease/classify',
+      }
+    );
+
+    if (!result.ok) {
+      // A stale handle is recoverable: the host expired the crop, so send the
+      // pixels this time rather than failing a scan the farmer already waited for.
+      if (result.kind === 'http' && result.status === 404 && request.roiId) {
+        logger.info('Cached ROI expired on the inference host. Retrying with the image.');
+        return this.classify({
+          buffer: request.buffer,
+          ...(request.requestId ? { requestId: request.requestId } : {}),
+        });
+      }
+
       return {
         available: false,
         disease: null,
         message:
-          'Disease detection model service is not configured for this environment.',
+          result.kind === 'timeout'
+            ? `Disease detection timed out after ${env.INFERENCE_CLASSIFY_TIMEOUT_MS}ms.`
+            : result.message,
       };
     }
 
-    const endpoint = `${env.AI_SERVICE_URL.replace(/\/$/, '')}/predict`;
-    const startedAt = Date.now();
+    const payload = result.data;
+    const ranked = this.rankedCandidates(payload);
+    const topLabel = this.topLabel(payload);
 
-    const formData = new FormData();
-    const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' });
-    formData.append('image', blob, 'leaf.jpg');
-    formData.append('crop', crop);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      env.AI_SERVICE_TIMEOUT_MS
-    );
-
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        body: formData,
-        signal: controller.signal,
-      });
-
-      const latencyMs = Date.now() - startedAt;
-
-      if (!response.ok) {
-        logger.warn(
-          `ConvNeXt service returned HTTP ${response.status} in ${latencyMs}ms`
-        );
-        return {
-          available: false,
-          disease: null,
-          message: `Disease detection service responded with error (HTTP ${response.status}).`,
-        };
-      }
-
-      const payload = (await response.json()) as ConvNextResponsePayload;
-
-      logger.debug(
-        `Inference candidates: ${JSON.stringify(payload.top_5_predictions ?? [])}`
-      );
-
-      const selected = this.selectPrediction(payload, crop);
-
-      if (!selected) {
-        logger.warn(`Inference response missing a disease prediction label`);
-        return {
-          available: false,
-          disease: null,
-          message: 'Disease detection returned an unparseable response payload.',
-        };
-      }
-
-      // Normalize confidence if reported as percentage (0-100) vs decimal (0-1)
-      const confidence =
-        selected.confidence > 1 ? selected.confidence / 100 : selected.confidence;
-
-      const diseaseName = this.cleanDiseaseLabel(selected.label, crop);
-
-      if (selected.crossCrop) {
-        // Reported rather than suppressed: the farmer still sees a result, but
-        // this is the signal that the model had no class for their crop.
-        logger.warn(
-          `Inference returned "${selected.label}", which does not belong to crop ${crop}. ` +
-            `Reporting it, but the model may not cover this crop.`
-        );
-      }
-
-      logger.info(
-        `Disease detection completed: "${diseaseName}" (raw: "${selected.label}") with ${(
-          confidence * 100
-        ).toFixed(1)}% confidence in ${latencyMs}ms`
-      );
-
-      return {
-        available: true,
-        disease: {
-          name: diseaseName,
-          confidence: Number(confidence.toFixed(4)),
-        },
-      };
-    } catch (error) {
-      const latencyMs = Date.now() - startedAt;
-      const aborted = error instanceof Error && error.name === 'AbortError';
-
-      logger.warn(
-        `ConvNeXt disease detection failed (${latencyMs}ms): ${
-          aborted ? 'Timeout' : error instanceof Error ? error.message : String(error)
-        }`
-      );
-
+    if (!topLabel || ranked.length === 0) {
+      logger.warn('Inference response carried no usable ranking.');
       return {
         available: false,
         disease: null,
-        message: aborted
-          ? `Disease detection timed out after ${env.AI_SERVICE_TIMEOUT_MS}ms.`
-          : 'Disease detection service is currently unreachable.',
+        message: 'Disease detection returned an unparseable response payload.',
       };
-    } finally {
-      clearTimeout(timeout);
     }
+
+    const novelty = payload.novelty
+      ? {
+          verdict: payload.novelty.verdict ?? 'accept',
+          accepted: payload.novelty.accepted ?? true,
+          knnDistance: payload.novelty.knn_distance ?? 0,
+          energy: payload.novelty.energy ?? 0,
+          confidence: payload.novelty.confidence ?? 0,
+          ...(payload.novelty.reason ? { reason: payload.novelty.reason } : {}),
+        }
+      : undefined;
+
+    logger.info(
+      `Classification: "${topLabel}" at ${((ranked[0]?.confidence ?? 0) * 100).toFixed(1)}% ` +
+        `[${novelty?.verdict ?? 'unchecked'}] in ${result.latencyMs}ms`
+    );
+
+    return {
+      available: true,
+      disease: null,
+      topLabel,
+      ranked,
+      ...(novelty ? { novelty } : {}),
+    };
   }
 }
 

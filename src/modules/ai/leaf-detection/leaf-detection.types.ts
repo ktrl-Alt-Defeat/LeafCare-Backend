@@ -1,14 +1,9 @@
 /**
- * Contract for the YOLO11x leaf-localization service.
+ * Contract for Stage 0, leaf localization.
  *
- * That service describes itself as "Stage 1 (Leaf Localization & High-Res Crop
- * Extraction)" with a downstream task of "Stage 2 Plant Pathology" — Stage 2
- * being this backend. It answers one question: is there a leaf in this frame,
- * and where.
- *
- * Shapes below were read from the deployed service, not from documentation:
- * POST /api/predict takes multipart `file` (NOT `image`) plus `conf` and
- * `imgsz`, and answers with the payload modelled by YoloPredictPayload.
+ * The wire shapes live in `inference-client.types.ts`; what follows is the
+ * domain view the orchestrator works with, which deliberately says nothing
+ * about which model or which host produced it.
  */
 
 /** A single detected leaf. Boxes are xyxy — corners, not width/height. */
@@ -34,38 +29,34 @@ export interface LeafDetectionResult {
   topConfidence: number | null;
   /** Largest-area box among those that cleared the floor; the crop candidate. */
   best: LeafBoundingBox | null;
+  /**
+   * The largest leaf, already cut out by the detector.
+   *
+   * The classifier reads this rather than the whole frame, so it sees a leaf
+   * filling the image instead of one leaf among soil, hands and background.
+   * Absent whenever the detector found nothing, was unreachable, or judged its
+   * own crop worse than the frame — in every such case the original is used.
+   */
+  crop: LeafCrop | null;
   latencyMs?: number;
   message?: string;
 }
 
-/** Raw prediction entry as the service emits it. */
-export interface YoloPrediction {
-  class?: string;
-  class_id?: number;
+/** A leaf ROI cut out of the submitted frame by the detector. */
+export interface LeafCrop {
+  buffer: Buffer;
+  mimeType: string;
+  /**
+   * Handle for the same crop still held by the inference host.
+   *
+   * Classification can quote this instead of uploading the pixels again, which
+   * over a home uplink is the difference between one image transfer per scan
+   * and two.
+   */
+  roiId?: string;
+  width?: number;
+  height?: number;
   confidence?: number;
-  box_pixel?: number[];
-  box_norm?: number[];
-}
-
-/** Raw body of POST /api/predict. */
-export interface YoloPredictPayload {
-  success?: boolean;
-  latency_ms?: number;
-  fps?: number;
-  leaf_count?: number;
-  predictions?: YoloPrediction[];
-}
-
-/** Raw body of GET /api/health. */
-export interface YoloHealthPayload {
-  status?: string;
-  service?: string;
-  /** "ready" once weights are resident. "loading" still answers HTTP 200. */
-  model_status?: string;
-  parameters_million?: number;
-  device?: string;
-  cuda_available?: boolean;
-  uptime_seconds?: number;
 }
 
 export interface LeafDetectorStatus {

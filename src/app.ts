@@ -7,7 +7,7 @@ import { env } from './config/env.js';
 import { swaggerSpec } from './config/swagger.js';
 import { httpLogger } from './middleware/logger.middleware.js';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware.js';
-import { generalLimiter, skipHealthChecks } from './middleware/rate-limit.middleware.js';
+import { generalLimiter, skipGeneralLimiter } from './middleware/rate-limit.middleware.js';
 import apiRouter from './routes/index.js';
 import { ForbiddenError } from './utils/app-error.js';
 
@@ -58,7 +58,7 @@ app.get('/docs.json', (_req, res) => {
 // probes, which an orchestrator polls continuously.
 app.use(
   '/api/v1',
-  (req, res, next) => (skipHealthChecks(req) ? next() : generalLimiter(req, res, next)),
+  (req, res, next) => (skipGeneralLimiter(req) ? next() : generalLimiter(req, res, next)),
   apiRouter
 );
 
