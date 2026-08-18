@@ -4,6 +4,7 @@ import { env } from '../config/env.js';
 import { prisma } from '../config/database.js';
 import { logger } from '../utils/logger.js';
 import { checkAiService, AiServiceStatus } from '../services/ai-status.service.js';
+import { leafDetectionService } from '../modules/ai/leaf-detection/leaf-detection.service.js';
 
 interface DependencyResult {
   status: 'up' | 'down' | 'not_configured';
@@ -108,12 +109,19 @@ export const checkReadiness = async (_req: Request, res: Response): Promise<Resp
 /**
  * GET /api/v1/ai/health
  *
- * Reports the status of the external inference service. Everything here is read
- * from that service; when it is not configured this returns `not_configured`
+ * Reports the status of the external inference services. Everything here is read
+ * from those services; when one is not configured this returns `not_configured`
  * rather than inventing a model name, device or load time.
+ *
+ * The HTTP status tracks the classifier alone. The leaf detector is a Stage 1
+ * optimisation the pipeline runs without, so its being down is reported but is
+ * not an outage of this endpoint.
  */
 export const checkAiHealth = async (_req: Request, res: Response): Promise<Response> => {
-  const ai: AiServiceStatus = await checkAiService();
+  const [ai, leafDetector] = await Promise.all([
+    checkAiService(),
+    leafDetectionService.checkStatus(),
+  ]);
 
   const httpStatus = ai.status === 'up' ? 200 : ai.status === 'not_configured' ? 200 : 503;
 
@@ -126,6 +134,9 @@ export const checkAiHealth = async (_req: Request, res: Response): Promise<Respo
         : ai.status === 'not_configured'
         ? 'AI inference service is not configured for this environment'
         : 'AI inference service is unreachable',
-    data: ai,
+    data: {
+      ...(ai as AiServiceStatus),
+      leafDetector,
+    },
   });
 };

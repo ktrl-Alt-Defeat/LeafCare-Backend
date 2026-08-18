@@ -96,6 +96,32 @@ this codebase. This API only observes it:
 Nothing here performs, proxies or simulates inference. Model name, version,
 device and load time are passed through verbatim and never fabricated.
 
+### Scan pipeline
+
+`POST /api/v1/ai/plant-identification` runs one image through five stages, each
+of which can stop it early:
+
+| Stage | Service | Stops the scan when |
+|---|---|---|
+| 0. Leaf localization | YOLO11x (`YOLO_SERVICE_URL`) | no leaf found, and `YOLO_GATE_ENABLED=true` |
+| 1. Plant identification | Pl@ntNet | confidence below `PLANTNET_MIN_CONFIDENCE` |
+| 2. Crop normalization | in-process | — |
+| 3. Supported-crop gate | in-process | crop is outside the supported list |
+| 4. Disease classification | `AI_SERVICE_URL` | — |
+
+Stage 0 exists to keep a photo of a wall from costing a Pl@ntNet call. It is
+**advisory**: a detector that is unset, unreachable or mid-restart falls through
+to stage 1 rather than failing the scan, so an outage there degrades cost, not
+availability. Only a confident "there is no leaf in this frame" stops anything.
+
+Every response carries a `leafDetection` block regardless of outcome, so a client
+can distinguish "we looked and found nothing" from "we never looked" — those
+warrant different advice to the user.
+
+Note the two model services disagree on their upload field name: the classifier
+takes `image`, the detector takes `file`. Both are correct against their own
+deployment; neither is a typo.
+
 ## Architecture
 
 ```

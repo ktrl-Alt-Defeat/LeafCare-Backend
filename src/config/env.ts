@@ -110,6 +110,49 @@ const envSchema = z.object({
     .default('30000')
     .transform((val) => parseInt(val, 10)),
 
+  // --- YOLO11x leaf detector (Stage 1) -------------------------------------
+  /**
+   * Base URL of the leaf-localization service. Optional on purpose: unset means
+   * scans skip straight to plant identification, exactly as they did before this
+   * stage existed. It narrows the funnel, it is not load-bearing.
+   */
+  YOLO_SERVICE_URL: z.string().url().optional(),
+  YOLO_SERVICE_TIMEOUT_MS: z
+    .string()
+    .default('45000')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val > 0, {
+      message: 'YOLO_SERVICE_TIMEOUT_MS must be a positive integer',
+    }),
+  /** Detections below this score are discarded. Matches the detector default. */
+  YOLO_MIN_CONFIDENCE: z
+    .string()
+    .default('0.35')
+    .transform((val) => parseFloat(val))
+    .refine((val) => !isNaN(val) && val >= 0 && val <= 1, {
+      message: 'YOLO_MIN_CONFIDENCE must be between 0 and 1',
+    }),
+  /** Inference size passed to the detector. Larger is slower, not always better. */
+  YOLO_IMAGE_SIZE: z
+    .string()
+    .default('640')
+    .transform((val) => parseInt(val, 10))
+    .refine((val) => !isNaN(val) && val > 0, {
+      message: 'YOLO_IMAGE_SIZE must be a positive integer',
+    }),
+  /**
+   * Whether a confident "no leaf here" stops the scan.
+   *
+   * On means a photo of a wall is rejected in one second instead of spending a
+   * Pl@ntNet call to reach the same answer. Off means detection is recorded and
+   * reported but never blocks — the safer setting if false negatives on unusual
+   * crops turn out to matter more than the saved quota.
+   */
+  YOLO_GATE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((val) => val === 'true'),
+
   // --- Pl@ntNet API Configuration -----------------------------------------
   PLANTNET_API_KEY: z
     .string({ required_error: 'PLANTNET_API_KEY is required' })
